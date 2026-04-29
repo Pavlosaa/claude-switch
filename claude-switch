@@ -1,0 +1,292 @@
+#!/usr/bin/env bash
+# claude-switch — manage installed versions of the Claude Code CLI
+# https://github.com/Pavlosaa/claude-switch
+set -euo pipefail
+
+VERSIONS_DIR="${CLAUDE_SWITCH_VERSIONS_DIR:-$HOME/.local/share/claude/versions}"
+SYMLINK="${CLAUDE_SWITCH_SYMLINK:-$HOME/.local/bin/claude}"
+NPM_REGISTRY="${CLAUDE_SWITCH_REGISTRY:-https://registry.npmjs.org}"
+
+# Colors
+BOLD='\033[1m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+YELLOW='\033[0;33m'
+RED='\033[0;31m'
+RESET='\033[0m'
+
+# ---------- Platform detection ----------
+
+detect_platform() {
+  local os arch
+  case "$(uname -s)" in
+    Darwin) os="darwin" ;;
+    Linux)  os="linux" ;;
+    *)
+      echo -e "${RED}Unsupported OS: $(uname -s)${RESET}" >&2
+      echo "claude-switch supports macOS and Linux. On Windows, use WSL." >&2
+      return 1
+      ;;
+  esac
+
+  case "$(uname -m)" in
+    arm64|aarch64) arch="arm64" ;;
+    x86_64|amd64)  arch="x64" ;;
+    *)
+      echo -e "${RED}Unsupported architecture: $(uname -m)${RESET}" >&2
+      return 1
+      ;;
+  esac
+
+  # Detect musl libc on Linux (e.g. Alpine)
+  if [[ "$os" == "linux" ]]; then
+    if ldd --version 2>&1 | grep -qi musl || [[ -f /etc/alpine-release ]]; then
+      echo "${os}-${arch}-musl"
+      return 0
+    fi
+  fi
+
+  echo "${os}-${arch}"
+}
+
+PLATFORM="$(detect_platform)"
+NPM_PKG="@anthropic-ai/claude-code-${PLATFORM}"
+
+# ---------- Helpers ----------
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo -e "${RED}Error: required command '$1' not found${RESET}" >&2
+    return 1
+  }
+}
+
+require_cmd curl
+require_cmd python3
+require_cmd tar
+
+current_version() {
+  if [[ -L "$SYMLINK" ]]; then
+    basename "$(readlink "$SYMLINK")"
+  else
+    echo "none"
+  fi
+}
+
+list_versions() {
+  local current
+  current="$(current_version)"
+  echo -e "${BOLD}Installed versions${RESET} (${CYAN}$PLATFORM${RESET})"
+  echo -e "${YELLOW}Location:${RESET} $VERSIONS_DIR"
+  if [[ ! -d "$VERSIONS_DIR" ]] || [[ -z "$(ls -A "$VERSIONS_DIR" 2>/dev/null)" ]]; then
+    echo "  (none — try ${CYAN}claude-switch download${RESET})"
+    return 0
+  fi
+  for f in "$VERSIONS_DIR"/2.*; do
+    [[ -f "$f" ]] || continue
+    local v
+    v="$(basename "$f")"
+    if [[ "$v" == "$current" ]]; then
+      echo -e "  ${GREEN}* $v${RESET}  (active)"
+    else
+      echo "    $v"
+    fi
+  done
+}
+
+latest_local_version() {
+  ls "$VERSIONS_DIR"/2.* 2>/dev/null | xargs -n1 basename | sort -t. -k1,1n -k2,2n -k3,3n | tail -1
+}
+
+# ---------- Registry ----------
+
+_registry_cache=""
+registry_metadata() {
+  if [[ -z "$_registry_cache" ]]; then
+    _registry_cache="$(curl -fsSL "$NPM_REGISTRY/$NPM_PKG")" || {
+      echo -e "${RED}Error: failed to fetch registry metadata for $NPM_PKG${RESET}" >&2
+      return 1
+    }
+  fi
+  printf '%s' "$_registry_cache"
+}
+
+remote_stable_version() {
+  registry_metadata | python3 -c "import sys,json; print(json.load(sys.stdin)['dist-tags']['stable'])"
+}
+
+remote_latest_version() {
+  registry_metadata | python3 -c "import sys,json; print(json.load(sys.stdin)['dist-tags']['latest'])"
+}
+
+remote_all_versions() {
+  registry_metadata | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+versions = sorted(data['versions'].keys(), key=lambda v: [int(x) for x in v.split('.')])
+print('\n'.join(versions))
+"
+}
+
+version_lte() {
+  python3 -c "
+import sys
+a = [int(x) for x in '${1}'.split('.')]
+b = [int(x) for x in '${2}'.split('.')]
+sys.exit(0 if a <= b else 1)
+"
+}
+
+# ---------- Download ----------
+
+download_version() {
+  local ver="$1"
+  local dest="$VERSIONS_DIR/$ver"
+
+  if [[ -f "$dest" ]]; then
+    echo -e "${YELLOW}Version $ver already downloaded${RESET}"
+    return 0
+  fi
+
+  local tarball_url
+  tarball_url="$(registry_metadata | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+v = data['versions'].get('${ver}')
+if not v:
+    sys.exit(1)
+print(v['dist']['tarball'])
+")" || {
+    echo -e "${RED}Error: version $ver not found in npm registry${RESET}" >&2
+    echo -e "Use ${CYAN}claude-switch remote${RESET} to list available versions" >&2
+    return 1
+  }
+
+  echo -e "Downloading ${BOLD}$ver${RESET} for ${CYAN}$PLATFORM${RESET} ..."
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  trap "rm -rf '$tmpdir'" RETURN
+
+  curl -fsSL "$tarball_url" -o "$tmpdir/pkg.tgz" || {
+    echo -e "${RED}Error: download failed${RESET}" >&2
+    return 1
+  }
+
+  tar -xzf "$tmpdir/pkg.tgz" -C "$tmpdir" || {
+    echo -e "${RED}Error: extraction failed${RESET}" >&2
+    return 1
+  }
+
+  local bin="$tmpdir/package/claude"
+  if [[ ! -f "$bin" ]]; then
+    echo -e "${RED}Error: binary not found in package${RESET}" >&2
+    return 1
+  fi
+
+  mkdir -p "$VERSIONS_DIR"
+  cp "$bin" "$dest"
+  chmod +x "$dest"
+  echo -e "${GREEN}Downloaded $ver${RESET} -> $dest"
+}
+
+# ---------- Switch ----------
+
+switch_to() {
+  local target="$1"
+  if [[ ! -f "$VERSIONS_DIR/$target" ]]; then
+    echo -e "${RED}Error: version $target not found in $VERSIONS_DIR${RESET}" >&2
+    list_versions
+    echo -e "Run ${CYAN}claude-switch download $target${RESET} to fetch it" >&2
+    return 1
+  fi
+  mkdir -p "$(dirname "$SYMLINK")"
+  ln -sf "$VERSIONS_DIR/$target" "$SYMLINK"
+  echo -e "Switched to ${GREEN}${BOLD}$target${RESET}"
+}
+
+# ---------- Help ----------
+
+show_help() {
+  cat <<EOF
+$(echo -e "${BOLD}claude-switch${RESET}") — manage Claude Code CLI versions
+
+$(echo -e "${BOLD}Usage:${RESET}")
+  claude-switch                  List installed versions
+  claude-switch list             List installed versions
+  claude-switch remote           List all versions available in npm registry
+  claude-switch latest           Switch to latest installed version
+  claude-switch <version>        Switch to an installed version
+  claude-switch download         Download latest stable version
+  claude-switch download <ver>   Download a specific version
+  claude-switch upgrade          Download latest stable + switch to it
+  claude-switch help             Show this help
+
+$(echo -e "${BOLD}Environment:${RESET}")
+  CLAUDE_SWITCH_VERSIONS_DIR     Directory holding versioned binaries
+                                 (default: ~/.local/share/claude/versions)
+  CLAUDE_SWITCH_SYMLINK          Path to the active 'claude' symlink
+                                 (default: ~/.local/bin/claude)
+  CLAUDE_SWITCH_REGISTRY         npm registry URL
+                                 (default: https://registry.npmjs.org)
+
+$(echo -e "${BOLD}Detected platform:${RESET}") $PLATFORM
+EOF
+}
+
+# ---------- Dispatch ----------
+
+case "${1:-}" in
+  ""|ls|list)
+    list_versions
+    ;;
+  remote)
+    echo -e "${BOLD}Available versions${RESET} (${CYAN}$PLATFORM${RESET})"
+    _stable="$(remote_stable_version)"
+    _latest="$(remote_latest_version)"
+    remote_all_versions | while read -r v; do
+      suffix=""
+      [[ "$v" == "$_stable" ]] && suffix=" ${GREEN}(stable)${RESET}"
+      [[ "$v" == "$_latest" ]] && suffix="${suffix} ${CYAN}(latest)${RESET}"
+      if [[ -f "$VERSIONS_DIR/$v" ]]; then
+        echo -e "  ${GREEN}* $v${RESET}$suffix"
+      else
+        echo -e "    $v$suffix"
+      fi
+    done
+    ;;
+  download)
+    if [[ -n "${2:-}" ]]; then
+      highest="$(remote_latest_version)"
+      if ! version_lte "$2" "$highest"; then
+        echo -e "${RED}Error: $2 is higher than the latest available version ($highest)${RESET}" >&2
+        exit 1
+      fi
+      download_version "$2"
+    else
+      stable="$(remote_stable_version)"
+      echo -e "Latest stable: ${BOLD}$stable${RESET}"
+      download_version "$stable"
+    fi
+    ;;
+  upgrade)
+    stable="$(remote_stable_version)"
+    echo -e "Latest stable: ${BOLD}$stable${RESET}"
+    download_version "$stable"
+    switch_to "$stable"
+    ;;
+  latest)
+    v="$(latest_local_version)"
+    if [[ -z "$v" ]]; then
+      echo -e "${RED}No versions found in $VERSIONS_DIR${RESET}" >&2
+      echo -e "Run ${CYAN}claude-switch download${RESET} first" >&2
+      exit 1
+    fi
+    switch_to "$v"
+    ;;
+  help|--help|-h|\?)
+    show_help
+    ;;
+  *)
+    switch_to "$1"
+    ;;
+esac
