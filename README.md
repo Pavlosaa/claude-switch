@@ -23,19 +23,35 @@ The official Claude Code installer keeps one version on your system. When a new 
 
 ## Install
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/Pavlosaa/claude-switch/main/install.sh | bash
-```
-
-Or manually:
+### Direct download
 
 ```sh
+mkdir -p ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/Pavlosaa/claude-switch/main/claude-switch \
   -o ~/.local/bin/claude-switch
 chmod +x ~/.local/bin/claude-switch
 ```
 
-Make sure `~/.local/bin` is on your `PATH`.
+Make sure `~/.local/bin` is on your `PATH`. If not, add this to `~/.zshrc` or `~/.bashrc`:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+### Homebrew
+
+```sh
+brew install Pavlosaa/tap/claude-switch
+```
+
+> The Homebrew tap is published separately at [`Pavlosaa/homebrew-tap`](https://github.com/Pavlosaa/homebrew-tap). It will be available after the first tagged release.
+
+### From source
+
+```sh
+git clone https://github.com/Pavlosaa/claude-switch.git
+ln -s "$PWD/claude-switch/claude-switch" ~/.local/bin/claude-switch
+```
 
 ## Usage
 
@@ -104,6 +120,13 @@ Override defaults with environment variables:
 - macOS (arm64 or x64) or Linux (arm64, x64, glibc or musl)
 
 Windows is not supported natively — use [WSL](https://learn.microsoft.com/en-us/windows/wsl/).
+
+## Releasing
+
+1. Tag a release: `git tag v0.1.0 && git push origin v0.1.0`
+2. Compute the tarball SHA256: `curl -fsSL https://github.com/Pavlosaa/claude-switch/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256`
+3. Update [`Formula/claude-switch.rb`](Formula/claude-switch.rb) with the version and SHA256.
+4. Copy the formula to [`Pavlosaa/homebrew-tap`](https://github.com/Pavlosaa/homebrew-tap) at `Formula/claude-switch.rb`.
 
 ## License
 
