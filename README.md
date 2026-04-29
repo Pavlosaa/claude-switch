@@ -121,12 +121,9 @@ Override defaults with environment variables:
 
 Windows is not supported natively — use [WSL](https://learn.microsoft.com/en-us/windows/wsl/).
 
-## Releasing
+## Maintainer docs
 
-1. Tag a release: `git tag v0.1.0 && git push origin v0.1.0`
-2. Compute the tarball SHA256: `curl -fsSL https://github.com/Pavlosaa/claude-switch/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256`
-3. Update [`Formula/claude-switch.rb`](Formula/claude-switch.rb) with the version and SHA256.
-4. Copy the formula to [`Pavlosaa/homebrew-tap`](https://github.com/Pavlosaa/homebrew-tap) at `Formula/claude-switch.rb`.
+See [docs/RUNBOOK.md](docs/RUNBOOK.md) for release process, hotfix procedure, platform support, and troubleshooting.
 
 ## License
 
