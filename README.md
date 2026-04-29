@@ -44,7 +44,7 @@ export PATH="$HOME/.local/bin:$PATH"
 brew install Pavlosaa/tap/claude-switch
 ```
 
-> The Homebrew tap is published separately at [`Pavlosaa/homebrew-tap`](https://github.com/Pavlosaa/homebrew-tap). It will be available after the first tagged release.
+Tap source: [`Pavlosaa/homebrew-tap`](https://github.com/Pavlosaa/homebrew-tap).
 
 ### From source
 
